@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "VPN TOTP Helper",
+  "version": "1.0",
+  "description": "Generate TOTP codes for VPN authentication and copy TOTP+password to clipboard",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "VPN TOTP Helper"
+  },
+  "icons": {
+    "16": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  }
+}

@@ -268,10 +268,27 @@ async function startCameraScanning() {
     statusDiv.className = 'camera-status';
     
     try {
-        cameraStream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'environment' } 
-        });
+        // Try environment camera first (back camera on phones), fallback to any camera
+        let constraints = { video: { facingMode: 'environment' } };
+        
+        try {
+            cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+            console.log('Environment camera failed, trying any camera:', err);
+            // Fallback to any available camera (works better on desktop)
+            constraints = { video: true };
+            cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+        }
+        
         video.srcObject = cameraStream;
+        
+        // Wait for video to be ready
+        await new Promise((resolve) => {
+            video.onloadedmetadata = () => {
+                video.play();
+                resolve();
+            };
+        });
         
         statusDiv.textContent = 'Position QR code in view';
         
@@ -317,13 +334,39 @@ async function startCameraScanning() {
             }
         }, 100);
     } catch (error) {
-        statusDiv.textContent = '⚠ Camera access denied or unavailable';
+        console.error('Camera error details:');
+        console.error('Error name:', error.name);
+        console.error('Error message:', error.message);
+        console.error('Full error:', error);
+        
+        let errorMsg = '⚠ Camera access denied or unavailable';
+        if (error.name === 'NotAllowedError' || error.message?.includes('Permission')) {
+            errorMsg = '⚠ Camera permission denied. Click the 🔒 icon in address bar to allow camera.';
+        } else if (error.name === 'NotFoundError' || error.message?.includes('not found')) {
+            errorMsg = '⚠ No camera found. Please use "Upload QR Code" instead.';
+        } else if (error.name === 'NotReadableError' || error.message?.includes('Could not start')) {
+            errorMsg = '⚠ Camera in use by another app. Close other apps and try again.';
+        } else if (error.name === 'OverconstrainedError') {
+            errorMsg = '⚠ Camera constraints not met. Trying simpler settings...';
+            // Try one more time with minimal constraints
+            try {
+                cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640 } });
+                video.srcObject = cameraStream;
+                statusDiv.textContent = 'Position QR code in view';
+                return; // Exit the catch block if successful
+            } catch (retryError) {
+                errorMsg = '⚠ Camera not compatible. Use "Upload QR Code" instead.';
+            }
+        } else {
+            errorMsg = `⚠ Camera error: ${error.message || 'Unknown error'}. Try "Upload QR Code".`;
+        }
+        
+        statusDiv.textContent = errorMsg;
         statusDiv.className = 'camera-status error';
-        console.error('Camera error:', error);
         
         setTimeout(() => {
             stopCameraScanning();
-        }, 2000);
+        }, 5000);
     }
 }
 

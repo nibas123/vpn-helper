@@ -228,13 +228,14 @@ body {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    padding: 11px 20px;
+    padding: 8px 16px;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
-    margin: 12px;
-    width: calc(100% - 24px);
+    margin: 8px 12px;
+    width: auto;
+    display: inline-block;
     transition: all 0.2s ease;
     animation: fadeIn 0.3s ease-out 0.1s both;
 }

@@ -9,9 +9,11 @@ function parseTOTPUri(uri) {
     try {
         // Log the scanned data for debugging
         console.log('Scanned QR data:', uri);
+        console.log('QR data type:', typeof uri, 'Length:', uri?.length);
         
         // Check if it's already just a secret (raw base32 string)
         if (uri && !uri.includes(':') && /^[A-Z2-7]+=*$/i.test(uri)) {
+            console.log('Detected as plain Base32 secret');
             return {
                 secret: uri.toUpperCase(),
                 issuer: '',
@@ -19,11 +21,18 @@ function parseTOTPUri(uri) {
             };
         }
         
+        // Handle Google Authenticator migration format
+        if (uri.startsWith('otpauth-migration://')) {
+            console.log('Detected Google Authenticator migration format');
+            return parseGoogleAuthMigration(uri);
+        }
+        
         // TOTP URI format: otpauth://totp/Label?secret=SECRET&issuer=Issuer
         const url = new URL(uri);
+        console.log('URL protocol:', url.protocol);
         
         if (url.protocol !== 'otpauth:') {
-            throw new Error('Not a valid OTP auth URI. Expected otpauth:// format or plain secret');
+            throw new Error('Not a valid OTP auth URI. Expected otpauth:// or otpauth-migration:// format');
         }
         
         const secret = url.searchParams.get('secret');
@@ -48,6 +57,163 @@ function parseTOTPUri(uri) {
         }
         throw new Error('Invalid TOTP QR code format. Expected otpauth:// URI or base32 secret');
     }
+}
+
+// Parse Google Authenticator migration QR code
+function parseGoogleAuthMigration(uri) {
+    try {
+        console.log('Parsing Google Auth migration URI...');
+        const url = new URL(uri);
+        const data = url.searchParams.get('data');
+        
+        if (!data) {
+            console.error('No data parameter found in migration URI');
+            throw new Error('No data in migration QR code');
+        }
+        
+        console.log('Found data parameter, length:', data.length);
+        
+        // Decode base64
+        const decoded = atob(data);
+        const bytes = new Uint8Array(decoded.length);
+        for (let i = 0; i < decoded.length; i++) {
+            bytes[i] = decoded.charCodeAt(i);
+        }
+        
+        console.log('Decoded bytes:', bytes.length);
+        
+        // Parse the protobuf-like structure (simplified parser for TOTP accounts)
+        const accounts = parseGoogleAuthProtobuf(bytes);
+        
+        console.log('Found accounts:', accounts.length);
+        
+        if (accounts.length === 0) {
+            throw new Error('No TOTP accounts found in migration data');
+        }
+        
+        // If multiple accounts, let user select
+        if (accounts.length > 1) {
+            console.log('Multiple accounts found, showing selection dialog');
+            return selectAccountFromMultiple(accounts);
+        }
+        
+        console.log('Successfully parsed account:', accounts[0].label || accounts[0].issuer);
+        return accounts[0];
+    } catch (error) {
+        console.error('Migration parse error:', error);
+        console.error('Migration URI:', uri);
+        throw new Error('Failed to parse Google Authenticator export. Error: ' + error.message);
+    }
+}
+
+// Simplified protobuf parser for Google Authenticator
+function parseGoogleAuthProtobuf(bytes) {
+    const accounts = [];
+    let i = 0;
+    
+    while (i < bytes.length) {
+        // Look for field tag 1 with wire type 2 (length-delimited)
+        if (bytes[i] === 0x0A) {
+            i++;
+            const length = bytes[i];
+            i++;
+            
+            const accountData = bytes.slice(i, i + length);
+            const account = parseAccountData(accountData);
+            if (account) {
+                accounts.push(account);
+            }
+            i += length;
+        } else {
+            i++;
+        }
+    }
+    
+    return accounts;
+}
+
+// Parse individual account data from protobuf
+function parseAccountData(data) {
+    let secret = '';
+    let name = '';
+    let issuer = '';
+    let i = 0;
+    
+    while (i < data.length) {
+        const fieldTag = data[i];
+        i++;
+        
+        if (fieldTag === 0x0A) { // Field 1: secret
+            const length = data[i];
+            i++;
+            const secretBytes = data.slice(i, i + length);
+            secret = base32Encode(secretBytes);
+            i += length;
+        } else if (fieldTag === 0x12) { // Field 2: name
+            const length = data[i];
+            i++;
+            name = String.fromCharCode.apply(null, data.slice(i, i + length));
+            i += length;
+        } else if (fieldTag === 0x1A) { // Field 3: issuer
+            const length = data[i];
+            i++;
+            issuer = String.fromCharCode.apply(null, data.slice(i, i + length));
+            i += length;
+        } else {
+            // Skip unknown fields
+            if (i < data.length) {
+                const length = data[i];
+                i += length + 1;
+            }
+        }
+    }
+    
+    if (secret) {
+        return {
+            secret: secret,
+            issuer: issuer,
+            label: name
+        };
+    }
+    
+    return null;
+}
+
+// Base32 encoding for secret
+function base32Encode(bytes) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let bits = 0;
+    let value = 0;
+    let output = '';
+    
+    for (let i = 0; i < bytes.length; i++) {
+        value = (value << 8) | bytes[i];
+        bits += 8;
+        
+        while (bits >= 5) {
+            output += alphabet[(value >>> (bits - 5)) & 31];
+            bits -= 5;
+        }
+    }
+    
+    if (bits > 0) {
+        output += alphabet[(value << (5 - bits)) & 31];
+    }
+    
+    return output;
+}
+
+// Let user select from multiple accounts
+function selectAccountFromMultiple(accounts) {
+    const accountList = accounts.map((acc, idx) => {
+        const displayName = acc.issuer ? `${acc.issuer} (${acc.label})` : acc.label;
+        return `${idx + 1}. ${displayName}`;
+    }).join('\n');
+    
+    const message = `Multiple accounts found in migration QR code:\n\n${accountList}\n\nThe first account will be imported. To import others, scan the QR code again for each account.`;
+    alert(message);
+    
+    return accounts[0];
 }
 
 // Scan QR code from uploaded image
@@ -300,7 +466,7 @@ function saveSettings() {
     const settingsSection = document.getElementById('settings-section');
     const toggleBtn = document.getElementById('toggle-settings');
     settingsSection.classList.add('hidden');
-    toggleBtn.textContent = 'Show Settings';
+    toggleBtn.textContent = 'Settings';
     
     // Show feedback
     const saveBtn = document.getElementById('save-settings');
@@ -316,35 +482,37 @@ function saveSettings() {
 }
 
 // Load settings from browser storage
-function loadSettings() {
+function loadSettings(populateFields = true) {
     const totpSecret = localStorage.getItem('vpn_totp_secret') || '';
     const timeOffset = parseInt(localStorage.getItem('vpn_time_offset')) || 0;
     const password = localStorage.getItem('vpn_password') || '';
     const copyFormat = localStorage.getItem('vpn_copy_format') || 'totp-first';
     
-    // Only populate fields if they exist in the DOM
-    const totpField = document.getElementById('totp-secret');
-    const timeOffsetField = document.getElementById('time-offset');
-    const passwordField = document.getElementById('password');
-    
-    if (totpField) totpField.value = totpSecret;
-    if (timeOffsetField) timeOffsetField.value = timeOffset;
-    if (passwordField) passwordField.value = password;
-    
-    // Set format buttons
-    document.querySelectorAll('.format-btn').forEach(btn => {
-        btn.classList.remove('active');
-        if (btn.dataset.format === copyFormat) {
-            btn.classList.add('active');
-        }
-    });
+    // Only populate fields if requested and they exist in the DOM
+    if (populateFields) {
+        const totpField = document.getElementById('totp-secret');
+        const timeOffsetField = document.getElementById('time-offset');
+        const passwordField = document.getElementById('password');
+        
+        if (totpField) totpField.value = totpSecret;
+        if (timeOffsetField) timeOffsetField.value = timeOffset;
+        if (passwordField) passwordField.value = password;
+        
+        // Set format buttons
+        document.querySelectorAll('.format-btn').forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.dataset.format === copyFormat) {
+                btn.classList.add('active');
+            }
+        });
+    }
     
     return { totpSecret, timeOffset, password, copyFormat };
 }
 
 // Update credentials display
 async function updateCredentialsDisplay() {
-    const settings = loadSettings();
+    const settings = loadSettings(false); // Don't populate fields, just get values
     
     // Check if all required settings are present
     if (!settings.totpSecret || !settings.password) {
@@ -404,10 +572,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         if (settingsSection.classList.contains('hidden')) {
             settingsSection.classList.remove('hidden');
-            toggleBtn.textContent = 'Hide Settings';
+            toggleBtn.textContent = '✕ Close';
         } else {
             settingsSection.classList.add('hidden');
-            toggleBtn.textContent = 'Show Settings';
+            toggleBtn.textContent = '⚙️ Settings';
         }
     });
     
@@ -493,7 +661,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Set up copy button
     document.getElementById('copy-auth').addEventListener('click', async () => {
         const button = document.getElementById('copy-auth');
-        const settings = loadSettings();
+        const settings = loadSettings(false); // Don't populate fields, just get values
         
         if (!settings.totpSecret || !settings.password) {
             alert('Please configure all settings first:\n1. Enter your TOTP secret key\n2. Enter your password');
@@ -502,7 +670,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const toggleBtn = document.getElementById('toggle-settings');
             if (settingsSection.classList.contains('hidden')) {
                 settingsSection.classList.remove('hidden');
-                toggleBtn.textContent = 'Hide Settings';
+                toggleBtn.textContent = '✕ Close';
             }
             return;
         }

@@ -6,12 +6,6 @@
   "permissions": [
     "storage"
   ],
-  "host_permissions": [
-    "https://cdn.jsdelivr.net/*"
-  ],
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' https://cdn.jsdelivr.net; object-src 'self'"
-  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "VPN TOTP Helper"

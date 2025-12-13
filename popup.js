@@ -7,11 +7,23 @@ let scanningInterval = null;
 // Parse TOTP URI from QR code
 function parseTOTPUri(uri) {
     try {
+        // Log the scanned data for debugging
+        console.log('Scanned QR data:', uri);
+        
+        // Check if it's already just a secret (raw base32 string)
+        if (uri && !uri.includes(':') && /^[A-Z2-7]+=*$/i.test(uri)) {
+            return {
+                secret: uri.toUpperCase(),
+                issuer: '',
+                label: ''
+            };
+        }
+        
         // TOTP URI format: otpauth://totp/Label?secret=SECRET&issuer=Issuer
         const url = new URL(uri);
         
         if (url.protocol !== 'otpauth:') {
-            throw new Error('Not a valid OTP auth URI');
+            throw new Error('Not a valid OTP auth URI. Expected otpauth:// format or plain secret');
         }
         
         const secret = url.searchParams.get('secret');
@@ -22,10 +34,19 @@ function parseTOTPUri(uri) {
         return {
             secret: secret.toUpperCase(),
             issuer: url.searchParams.get('issuer') || '',
-            label: decodeURIComponent(url.pathname.replace('/totp/', ''))
+            label: decodeURIComponent(url.pathname.replace(/^\/totp\/|^\/hotp\//i, ''))
         };
     } catch (error) {
-        throw new Error('Invalid TOTP QR code format');
+        console.error('Parse error:', error);
+        // If it looks like it might be a plain secret, try to use it
+        if (uri && typeof uri === 'string' && /^[A-Z2-7]+=*$/i.test(uri.trim())) {
+            return {
+                secret: uri.trim().toUpperCase(),
+                issuer: '',
+                label: ''
+            };
+        }
+        throw new Error('Invalid TOTP QR code format. Expected otpauth:// URI or base32 secret');
     }
 }
 
@@ -114,8 +135,17 @@ async function startCameraScanning() {
                             stopCameraScanning();
                         }, 1000);
                     } catch (error) {
+                        console.error('Scan error:', error, 'Data:', code.data);
                         statusDiv.textContent = '⚠ ' + error.message;
                         statusDiv.className = 'camera-status error';
+                        
+                        // Clear error after 3 seconds to allow retry
+                        setTimeout(() => {
+                            if (statusDiv.className === 'camera-status error') {
+                                statusDiv.textContent = 'Position QR code in view';
+                                statusDiv.className = 'camera-status';
+                            }
+                        }, 3000);
                     }
                 }
             }
@@ -512,7 +542,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update display every second for countdown
     setInterval(async () => {
         const timeRemaining = getTimeRemaining();
-        document.getElementById('countdown').textContent = timeRemaining;
+        const countdownElement = document.getElementById('countdown');
+        countdownElement.textContent = timeRemaining;
+        
+        // Add urgent class when time is low
+        if (timeRemaining <= 5) {
+            countdownElement.classList.add('urgent');
+        } else {
+            countdownElement.classList.remove('urgent');
+        }
         
         // Regenerate TOTP when it expires
         if (timeRemaining === 30 || timeRemaining === 29) {

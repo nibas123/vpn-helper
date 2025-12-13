@@ -1,6 +1,153 @@
-// VPN TOTP Helper - Chrome Extension Script
 
-// No default secrets - users must provide their own for security
+
+// QR Code scanning variables
+let cameraStream = null;
+let scanningInterval = null;
+
+// Parse TOTP URI from QR code
+function parseTOTPUri(uri) {
+    try {
+        // TOTP URI format: otpauth://totp/Label?secret=SECRET&issuer=Issuer
+        const url = new URL(uri);
+        
+        if (url.protocol !== 'otpauth:') {
+            throw new Error('Not a valid OTP auth URI');
+        }
+        
+        const secret = url.searchParams.get('secret');
+        if (!secret) {
+            throw new Error('No secret found in QR code');
+        }
+        
+        return {
+            secret: secret.toUpperCase(),
+            issuer: url.searchParams.get('issuer') || '',
+            label: decodeURIComponent(url.pathname.replace('/totp/', ''))
+        };
+    } catch (error) {
+        throw new Error('Invalid TOTP QR code format');
+    }
+}
+
+// Scan QR code from uploaded image
+async function scanQRFromImage(imageFile) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onload = (e) => {
+            const img = new Image();
+            
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                canvas.width = img.width;
+                canvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
+                
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                
+                if (code) {
+                    try {
+                        const totpData = parseTOTPUri(code.data);
+                        resolve(totpData);
+                    } catch (error) {
+                        reject(error);
+                    }
+                } else {
+                    reject(new Error('No QR code found in image'));
+                }
+            };
+            
+            img.onerror = () => reject(new Error('Failed to load image'));
+            img.src = e.target.result;
+        };
+        
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(imageFile);
+    });
+}
+
+// Start camera for QR scanning
+async function startCameraScanning() {
+    const modal = document.getElementById('camera-modal');
+    const video = document.getElementById('camera-preview');
+    const canvas = document.getElementById('qr-canvas');
+    const statusDiv = document.getElementById('camera-status');
+    
+    modal.classList.remove('hidden');
+    statusDiv.textContent = 'Starting camera...';
+    statusDiv.className = 'camera-status';
+    
+    try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment' } 
+        });
+        video.srcObject = cameraStream;
+        
+        statusDiv.textContent = 'Position QR code in view';
+        
+        // Start scanning loop
+        scanningInterval = setInterval(() => {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                
+                if (code) {
+                    try {
+                        const totpData = parseTOTPUri(code.data);
+                        
+                        // Update the secret field
+                        document.getElementById('totp-secret').value = totpData.secret;
+                        
+                        statusDiv.textContent = '✓ QR Code scanned successfully!';
+                        statusDiv.className = 'camera-status success';
+                        
+                        // Close camera after 1 second
+                        setTimeout(() => {
+                            stopCameraScanning();
+                        }, 1000);
+                    } catch (error) {
+                        statusDiv.textContent = '⚠ ' + error.message;
+                        statusDiv.className = 'camera-status error';
+                    }
+                }
+            }
+        }, 100);
+    } catch (error) {
+        statusDiv.textContent = '⚠ Camera access denied or unavailable';
+        statusDiv.className = 'camera-status error';
+        console.error('Camera error:', error);
+        
+        setTimeout(() => {
+            stopCameraScanning();
+        }, 2000);
+    }
+}
+
+// Stop camera scanning
+function stopCameraScanning() {
+    if (scanningInterval) {
+        clearInterval(scanningInterval);
+        scanningInterval = null;
+    }
+    
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+    }
+    
+    const modal = document.getElementById('camera-modal');
+    const video = document.getElementById('camera-preview');
+    video.srcObject = null;
+    modal.classList.add('hidden');
+}
 
 // Base32 decode function
 function base32Decode(encoded) {
@@ -95,12 +242,11 @@ async function copyToClipboard(text) {
 function saveSettings() {
     const totpSecret = document.getElementById('totp-secret').value.trim();
     const timeOffset = parseInt(document.getElementById('time-offset').value) || 0;
-    const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
     const copyFormat = document.querySelector('.format-btn.active').dataset.format;
     
-    if (!totpSecret || !username || !password) {
-        alert('Please enter TOTP secret, username, and password');
+    if (!totpSecret || !password) {
+        alert('Please enter TOTP secret and password');
         return;
     }
     
@@ -114,7 +260,6 @@ function saveSettings() {
     // Save to localStorage
     localStorage.setItem('vpn_totp_secret', totpSecret.toUpperCase());
     localStorage.setItem('vpn_time_offset', timeOffset.toString());
-    localStorage.setItem('vpn_username', username);
     localStorage.setItem('vpn_password', password);
     localStorage.setItem('vpn_copy_format', copyFormat);
     
@@ -144,19 +289,16 @@ function saveSettings() {
 function loadSettings() {
     const totpSecret = localStorage.getItem('vpn_totp_secret') || '';
     const timeOffset = parseInt(localStorage.getItem('vpn_time_offset')) || 0;
-    const username = localStorage.getItem('vpn_username') || '';
     const password = localStorage.getItem('vpn_password') || '';
     const copyFormat = localStorage.getItem('vpn_copy_format') || 'totp-first';
     
     // Only populate fields if they exist in the DOM
     const totpField = document.getElementById('totp-secret');
     const timeOffsetField = document.getElementById('time-offset');
-    const usernameField = document.getElementById('username');
     const passwordField = document.getElementById('password');
     
     if (totpField) totpField.value = totpSecret;
     if (timeOffsetField) timeOffsetField.value = timeOffset;
-    if (usernameField) usernameField.value = username;
     if (passwordField) passwordField.value = password;
     
     // Set format buttons
@@ -167,7 +309,7 @@ function loadSettings() {
         }
     });
     
-    return { totpSecret, timeOffset, username, password, copyFormat };
+    return { totpSecret, timeOffset, password, copyFormat };
 }
 
 // Update credentials display
@@ -175,7 +317,7 @@ async function updateCredentialsDisplay() {
     const settings = loadSettings();
     
     // Check if all required settings are present
-    if (!settings.totpSecret || !settings.username || !settings.password) {
+    if (!settings.totpSecret || !settings.password) {
         document.getElementById('current-totp').textContent = 'Setup Required';
         document.getElementById('copy-auth').disabled = true;
         document.getElementById('countdown').textContent = '--';
@@ -239,6 +381,67 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
     
+    // Set up QR code upload button
+    document.getElementById('scan-qr-upload').addEventListener('click', () => {
+        document.getElementById('qr-file-input').click();
+    });
+    
+    // Handle file upload
+    document.getElementById('qr-file-input').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const uploadBtn = document.getElementById('scan-qr-upload');
+        const originalText = uploadBtn.textContent;
+        
+        try {
+            uploadBtn.textContent = '⏳ Scanning...';
+            uploadBtn.disabled = true;
+            
+            const totpData = await scanQRFromImage(file);
+            
+            // Update the secret field
+            document.getElementById('totp-secret').value = totpData.secret;
+            
+            uploadBtn.textContent = '✓ Scanned!';
+            uploadBtn.style.background = '#198754';
+            uploadBtn.style.color = 'white';
+            
+            setTimeout(() => {
+                uploadBtn.textContent = originalText;
+                uploadBtn.style.background = '';
+                uploadBtn.style.color = '';
+                uploadBtn.disabled = false;
+            }, 2000);
+        } catch (error) {
+            uploadBtn.textContent = '✗ Failed';
+            uploadBtn.style.background = '#dc3545';
+            uploadBtn.style.color = 'white';
+            
+            alert(error.message || 'Failed to scan QR code from image');
+            
+            setTimeout(() => {
+                uploadBtn.textContent = originalText;
+                uploadBtn.style.background = '';
+                uploadBtn.style.color = '';
+                uploadBtn.disabled = false;
+            }, 2000);
+        }
+        
+        // Reset file input
+        e.target.value = '';
+    });
+    
+    // Set up QR code camera button
+    document.getElementById('scan-qr-camera').addEventListener('click', () => {
+        startCameraScanning();
+    });
+    
+    // Set up close camera button
+    document.getElementById('close-camera').addEventListener('click', () => {
+        stopCameraScanning();
+    });
+    
     // Set up save settings button
     document.getElementById('save-settings').addEventListener('click', saveSettings);
     
@@ -262,8 +465,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const button = document.getElementById('copy-auth');
         const settings = loadSettings();
         
-        if (!settings.totpSecret || !settings.username || !settings.password) {
-            alert('Please configure all settings first:\n1. Enter your TOTP secret key\n2. Enter your username\n3. Enter your password');
+        if (!settings.totpSecret || !settings.password) {
+            alert('Please configure all settings first:\n1. Enter your TOTP secret key\n2. Enter your password');
             // Show settings if they're hidden
             const settingsSection = document.getElementById('settings-section');
             const toggleBtn = document.getElementById('toggle-settings');
@@ -299,10 +502,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     
     document.getElementById('time-offset').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') saveSettings();
-    });
-    
-    document.getElementById('username').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') saveSettings();
     });
     

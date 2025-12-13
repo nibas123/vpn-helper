@@ -1,11 +1,17 @@
 {
   "manifest_version": 3,
   "name": "VPN TOTP Helper",
-  "version": "1.0",
-  "description": "Generate TOTP codes for VPN authentication and copy TOTP+password to clipboard",
+  "version": "1.1",
+  "description": "Generate TOTP codes for VPN authentication with QR code scanning support",
   "permissions": [
     "storage"
   ],
+  "host_permissions": [
+    "https://cdn.jsdelivr.net/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' https://cdn.jsdelivr.net; object-src 'self'"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "VPN TOTP Helper"

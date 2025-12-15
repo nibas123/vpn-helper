@@ -9,10 +9,5 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "VPN TOTP Helper"
-  },
-  "icons": {
-    "16": "icon.svg",
-    "48": "icon.svg",
-    "128": "icon.svg"
   }
 }
